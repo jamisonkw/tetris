@@ -202,11 +202,43 @@
       const hardDrop = useCallback(() => {
         if (!currentPiece || gameOver || isPaused) return;
         
-        let dropDistance = 0;
-        while (moveDown(true)) {
-          dropDistance++;
+        // Calculate where the piece should land
+        let dropY = position.y;
+        while (!checkCollision(currentPiece, { x: position.x, y: dropY + 1 })) {
+          dropY++;
         }
-      }, [currentPiece, gameOver, isPaused, moveDown]);
+        
+        // Calculate points for the drop
+        const dropDistance = dropY - position.y;
+        setScore(prev => prev + dropDistance * 2);
+        
+        // Set position to the landing spot
+        setPosition({ x: position.x, y: dropY });
+        
+        // Immediately trigger the merge by scheduling it
+        setTimeout(() => {
+          const merged = mergePiece();
+          const { board: clearedBoard, linesCleared } = clearLines(merged);
+          
+          setBoard(clearedBoard);
+          setLines(prev => prev + linesCleared);
+          
+          if (linesCleared > 0) {
+            const points = [40, 100, 300, 1200][linesCleared - 1] * level;
+            setScore(prev => prev + points);
+          }
+          
+          const newPiece = createPiece();
+          const startPos = { x: Math.floor(COLS / 2) - 1, y: 0 };
+          
+          if (checkCollision(newPiece, startPos, clearedBoard)) {
+            setGameOver(true);
+          } else {
+            setCurrentPiece(newPiece);
+            setPosition(startPos);
+          }
+        }, 50);
+      }, [currentPiece, position, gameOver, isPaused, checkCollision, mergePiece, clearLines, createPiece, level]);
 
       // Calculate ghost position
       const getGhostPosition = useCallback(() => {
