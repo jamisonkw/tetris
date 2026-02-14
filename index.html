@@ -208,6 +208,17 @@
         }
       }, [currentPiece, gameOver, isPaused, moveDown]);
 
+      // Calculate ghost position
+      const getGhostPosition = useCallback(() => {
+        if (!currentPiece) return null;
+        
+        let ghostY = position.y;
+        while (!checkCollision(currentPiece, { x: position.x, y: ghostY + 1 })) {
+          ghostY++;
+        }
+        return { x: position.x, y: ghostY };
+      }, [currentPiece, position, checkCollision]);
+
       // Touch handlers
       const handleTouchStart = (e) => {
         e.preventDefault();
@@ -232,8 +243,8 @@
           lastMoveRef.current = now;
         }
         
-        // Swipe left/right to move
-        if (Math.abs(deltaX) > 30 && now - lastMoveRef.current > 100) {
+        // More responsive horizontal movement - reduced threshold from 30 to 15
+        if (Math.abs(deltaX) > 15 && now - lastMoveRef.current > 80) {
           if (deltaX > 0) moveHorizontal(1);
           else moveHorizontal(-1);
           touchStartRef.current.x = touch.clientX;
@@ -248,8 +259,12 @@
         const deltaX = touch.clientX - touchStartRef.current.x;
         const timeDelta = Date.now() - touchStartRef.current.time;
         
+        // Quick swipe down = hard drop (fast swipe, > 80px movement)
+        if (deltaY > 80 && timeDelta < 300 && Math.abs(deltaX) < 40) {
+          hardDrop();
+        }
         // Tap to rotate (short touch with minimal movement)
-        if (timeDelta < 200 && Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10) {
+        else if (timeDelta < 200 && Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10) {
           rotate();
         }
       };
@@ -312,9 +327,28 @@
         setPosition({ x: Math.floor(COLS / 2) - 1, y: 0 });
       };
 
-      // Render board
+      // Render board with ghost piece
       const renderBoard = () => {
         const displayBoard = board.map(row => [...row]);
+        const ghostPos = getGhostPosition();
+        
+        // Add ghost piece to display (with 'ghost' marker)
+        if (currentPiece && ghostPos) {
+          for (let y = 0; y < currentPiece.shape.length; y++) {
+            for (let x = 0; x < currentPiece.shape[y].length; x++) {
+              if (currentPiece.shape[y][x]) {
+                const boardY = ghostPos.y + y;
+                const boardX = ghostPos.x + x;
+                if (boardY >= 0 && boardY < ROWS && boardX >= 0 && boardX < COLS) {
+                  // Only show ghost if it's different from current position
+                  if (ghostPos.y !== position.y && !displayBoard[boardY][boardX]) {
+                    displayBoard[boardY][boardX] = 'ghost-' + currentPiece.type;
+                  }
+                }
+              }
+            }
+          }
+        }
         
         // Add current piece to display
         if (currentPiece) {
@@ -424,31 +458,39 @@
             }}
           >
             {displayBoard.map((row, y) =>
-              row.map((cell, x) => (
-                <div
-                  key={`${y}-${x}`}
-                  style={{
-                    width: `${BLOCK_SIZE}px`,
-                    height: `${BLOCK_SIZE}px`,
-                    backgroundColor: cell ? COLORS[cell] : 'rgba(255, 255, 255, 0.02)',
-                    borderRadius: '3px',
-                    transition: 'all 0.1s ease',
-                    boxShadow: cell ? `0 2px 8px ${COLORS[cell]}40, inset 0 0 0 1px rgba(255, 255, 255, 0.2)` : 'none',
-                    position: 'relative',
-                    overflow: 'hidden'
-                  }}
-                >
-                  {cell && (
-                    <div style={{
-                      position: 'absolute',
-                      inset: '4px',
-                      background: `linear-gradient(135deg, rgba(255,255,255,0.3) 0%, transparent 100%)`,
-                      borderRadius: '2px',
-                      pointerEvents: 'none'
-                    }} />
-                  )}
-                </div>
-              ))
+              row.map((cell, x) => {
+                const isGhost = cell && cell.toString().startsWith('ghost-');
+                const cellType = isGhost ? cell.toString().replace('ghost-', '') : cell;
+                const cellColor = cellType ? COLORS[cellType] : null;
+                
+                return (
+                  <div
+                    key={`${y}-${x}`}
+                    style={{
+                      width: `${BLOCK_SIZE}px`,
+                      height: `${BLOCK_SIZE}px`,
+                      backgroundColor: cellColor ? (isGhost ? 'rgba(255, 255, 255, 0.02)' : cellColor) : 'rgba(255, 255, 255, 0.02)',
+                      borderRadius: '3px',
+                      transition: 'all 0.1s ease',
+                      boxShadow: cellColor && !isGhost ? `0 2px 8px ${cellColor}40, inset 0 0 0 1px rgba(255, 255, 255, 0.2)` : 'none',
+                      position: 'relative',
+                      overflow: 'hidden',
+                      border: isGhost ? `2px solid ${cellColor}` : 'none',
+                      opacity: isGhost ? 0.3 : 1
+                    }}
+                  >
+                    {cellColor && !isGhost && (
+                      <div style={{
+                        position: 'absolute',
+                        inset: '4px',
+                        background: `linear-gradient(135deg, rgba(255,255,255,0.3) 0%, transparent 100%)`,
+                        borderRadius: '2px',
+                        pointerEvents: 'none'
+                      }} />
+                    )}
+                  </div>
+                );
+              })
             )}
             
             {/* Particles */}
@@ -482,7 +524,7 @@
             opacity: 0.5,
             lineHeight: '1.6'
           }}>
-            Tap to rotate • Drag down to drop faster • Swipe left/right to move
+            Tap to rotate • Swipe down to drop • Swipe left/right to move
           </div>
 
           {/* Game Over overlay */}
