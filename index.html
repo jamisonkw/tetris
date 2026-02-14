@@ -52,12 +52,15 @@
       const [gameOver, setGameOver] = useState(false);
       const [isPaused, setIsPaused] = useState(false);
       const [particles, setParticles] = useState([]);
+      const [isLocked, setIsLocked] = useState(false);
       
       const gameLoopRef = useRef(null);
+      const lockTimerRef = useRef(null);
       const dropSpeedRef = useRef(800);
       const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
       const lastMoveRef = useRef(0);
       const lastHorizontalMoveRef = useRef(0);
+      const lastHorizontalPositionRef = useRef(0);
 
       // Create new piece
       const createPiece = useCallback(() => {
@@ -144,6 +147,34 @@
         return { board: boardState, linesCleared: 0 };
       }, []);
 
+      // Lock piece after delay
+      const lockPiece = useCallback(() => {
+        if (!currentPiece || isLocked) return;
+        
+        const merged = mergePiece();
+        const { board: clearedBoard, linesCleared } = clearLines(merged);
+        
+        setBoard(clearedBoard);
+        setLines(prev => prev + linesCleared);
+        
+        if (linesCleared > 0) {
+          const points = [40, 100, 300, 1200][linesCleared - 1] * level;
+          setScore(prev => prev + points);
+        }
+        
+        // Use next piece and generate a new next piece
+        const startPos = { x: Math.floor(COLS / 2) - 1, y: 0 };
+        
+        if (checkCollision(nextPiece, startPos, clearedBoard)) {
+          setGameOver(true);
+        } else {
+          setCurrentPiece(nextPiece);
+          setNextPiece(createPiece());
+          setPosition(startPos);
+          setIsLocked(false);
+        }
+      }, [currentPiece, nextPiece, isLocked, mergePiece, clearLines, createPiece, checkCollision, level]);
+
       // Move piece down
       const moveDown = useCallback((fast = false) => {
         if (!currentPiece || gameOver || isPaused) return false;
@@ -151,35 +182,34 @@
         const newPos = { ...position, y: position.y + 1 };
         
         if (checkCollision(currentPiece, newPos)) {
-          const merged = mergePiece();
-          const { board: clearedBoard, linesCleared } = clearLines(merged);
-          
-          setBoard(clearedBoard);
-          setLines(prev => prev + linesCleared);
-          
-          if (linesCleared > 0) {
-            const points = [40, 100, 300, 1200][linesCleared - 1] * level;
-            setScore(prev => prev + points);
+          // Piece has landed - start lock delay
+          if (!isLocked) {
+            setIsLocked(true);
+            // Clear any existing lock timer
+            if (lockTimerRef.current) {
+              clearTimeout(lockTimerRef.current);
+            }
+            // Set lock timer (500ms delay for infinite rotation)
+            lockTimerRef.current = setTimeout(() => {
+              lockPiece();
+            }, 500);
           }
-          
-          // Use next piece and generate a new next piece
-          const startPos = { x: Math.floor(COLS / 2) - 1, y: 0 };
-          
-          if (checkCollision(nextPiece, startPos, clearedBoard)) {
-            setGameOver(true);
-            return false;
-          }
-          
-          setCurrentPiece(nextPiece);
-          setNextPiece(createPiece());
-          setPosition(startPos);
           return false;
         } else {
           setPosition(newPos);
           if (fast) setScore(prev => prev + 1);
+          
+          // If moving down successfully, cancel lock
+          if (isLocked) {
+            setIsLocked(false);
+            if (lockTimerRef.current) {
+              clearTimeout(lockTimerRef.current);
+              lockTimerRef.current = null;
+            }
+          }
           return true;
         }
-      }, [currentPiece, nextPiece, position, gameOver, isPaused, checkCollision, mergePiece, clearLines, createPiece, level]);
+      }, [currentPiece, position, gameOver, isPaused, isLocked, checkCollision, lockPiece]);
 
       // Move left/right
       const moveHorizontal = useCallback((direction) => {
@@ -188,8 +218,16 @@
         const newPos = { ...position, x: position.x + direction };
         if (!checkCollision(currentPiece, newPos)) {
           setPosition(newPos);
+          
+          // Reset lock timer when moving horizontally
+          if (isLocked && lockTimerRef.current) {
+            clearTimeout(lockTimerRef.current);
+            lockTimerRef.current = setTimeout(() => {
+              lockPiece();
+            }, 500);
+          }
         }
-      }, [currentPiece, position, gameOver, isPaused, checkCollision]);
+      }, [currentPiece, position, gameOver, isPaused, isLocked, checkCollision, lockPiece]);
 
       // Rotate with wall kicks
       const rotate = useCallback(() => {
@@ -200,6 +238,14 @@
         // Try rotating at current position first
         if (!checkCollision(rotated, position)) {
           setCurrentPiece(rotated);
+          
+          // Reset lock timer when rotating
+          if (isLocked && lockTimerRef.current) {
+            clearTimeout(lockTimerRef.current);
+            lockTimerRef.current = setTimeout(() => {
+              lockPiece();
+            }, 500);
+          }
           return;
         }
         
@@ -210,16 +256,31 @@
           if (!checkCollision(rotated, kickPos)) {
             setCurrentPiece(rotated);
             setPosition(kickPos);
+            
+            // Reset lock timer when rotating
+            if (isLocked && lockTimerRef.current) {
+              clearTimeout(lockTimerRef.current);
+              lockTimerRef.current = setTimeout(() => {
+                lockPiece();
+              }, 500);
+            }
             return;
           }
         }
         
         // If no wall kick works, rotation fails (don't rotate)
-      }, [currentPiece, position, gameOver, isPaused, rotatePiece, checkCollision]);
+      }, [currentPiece, position, gameOver, isPaused, isLocked, rotatePiece, checkCollision, lockPiece]);
 
       // Hard drop
       const hardDrop = useCallback(() => {
         if (!currentPiece || gameOver || isPaused) return;
+        
+        // Clear lock timer
+        if (lockTimerRef.current) {
+          clearTimeout(lockTimerRef.current);
+          lockTimerRef.current = null;
+        }
+        setIsLocked(false);
         
         // Calculate where the piece should land
         let dropY = position.y;
@@ -293,6 +354,7 @@
           time: Date.now()
         };
         lastHorizontalMoveRef.current = 0;
+        lastHorizontalPositionRef.current = position.x;
       };
 
       const handleTouchMove = (e) => {
@@ -308,15 +370,24 @@
           lastMoveRef.current = now;
         }
         
-        // Much more fluid horizontal movement - continuous tracking
-        const cellWidth = BLOCK_SIZE + 1; // Account for gap
-        const horizontalCells = Math.floor(Math.abs(deltaX) / cellWidth);
+        // Ultra-smooth horizontal movement - track pixel-by-pixel
+        const cellWidth = BLOCK_SIZE;
+        const targetX = lastHorizontalPositionRef.current + Math.round(deltaX / cellWidth);
+        const clampedX = Math.max(0, Math.min(COLS - (currentPiece ? currentPiece.shape[0].length : 1), targetX));
         
-        if (horizontalCells > lastHorizontalMoveRef.current && now - lastMoveRef.current > 50) {
-          const direction = deltaX > 0 ? 1 : -1;
-          moveHorizontal(direction);
-          lastHorizontalMoveRef.current = horizontalCells;
-          lastMoveRef.current = now;
+        if (clampedX !== position.x && currentPiece) {
+          const testPos = { x: clampedX, y: position.y };
+          if (!checkCollision(currentPiece, testPos)) {
+            setPosition(testPos);
+            
+            // Reset lock timer when moving
+            if (isLocked && lockTimerRef.current) {
+              clearTimeout(lockTimerRef.current);
+              lockTimerRef.current = setTimeout(() => {
+                lockPiece();
+              }, 500);
+            }
+          }
         }
       };
 
@@ -386,14 +457,28 @@
         return () => clearInterval(interval);
       }, [particles.length]);
 
+      // Cleanup lock timer on unmount
+      useEffect(() => {
+        return () => {
+          if (lockTimerRef.current) {
+            clearTimeout(lockTimerRef.current);
+          }
+        };
+      }, []);
+
       // Restart game
       const restart = () => {
+        if (lockTimerRef.current) {
+          clearTimeout(lockTimerRef.current);
+          lockTimerRef.current = null;
+        }
         setBoard(Array(ROWS).fill().map(() => Array(COLS).fill(null)));
         setScore(0);
         setLevel(1);
         setLines(0);
         setGameOver(false);
         setParticles([]);
+        setIsLocked(false);
         const piece = createPiece();
         const next = createPiece();
         setCurrentPiece(piece);
@@ -525,25 +610,33 @@
               }}>
                 <div style={{ fontSize: '12px', opacity: 0.6, marginBottom: '8px', textAlign: 'center' }}>NEXT</div>
                 <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: `repeat(4, 20px)`,
-                  gridTemplateRows: `repeat(${nextPiece.shape.length}, 20px)`,
-                  gap: '2px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: '80px',
+                  minHeight: '60px'
                 }}>
-                  {nextPiece.shape.map((row, y) =>
-                    row.map((cell, x) => (
-                      <div
-                        key={`next-${y}-${x}`}
-                        style={{
-                          width: '20px',
-                          height: '20px',
-                          backgroundColor: cell ? COLORS[nextPiece.type] : 'transparent',
-                          borderRadius: '2px',
-                          boxShadow: cell ? `0 2px 6px ${COLORS[nextPiece.type]}40` : 'none',
-                        }}
-                      />
-                    ))
-                  )}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: `repeat(${nextPiece.shape[0].length}, 18px)`,
+                    gridTemplateRows: `repeat(${nextPiece.shape.length}, 18px)`,
+                    gap: '2px',
+                  }}>
+                    {nextPiece.shape.map((row, y) =>
+                      row.map((cell, x) => (
+                        <div
+                          key={`next-${y}-${x}`}
+                          style={{
+                            width: '18px',
+                            height: '18px',
+                            backgroundColor: cell ? COLORS[nextPiece.type] : 'transparent',
+                            borderRadius: '2px',
+                            boxShadow: cell ? `0 2px 6px ${COLORS[nextPiece.type]}40` : 'none',
+                          }}
+                        />
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
             )}
