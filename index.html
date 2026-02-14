@@ -13,8 +13,607 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel" src="tetris.jsx"></script>
   <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    const COLS = 10;
+    const ROWS = 20;
+    const BLOCK_SIZE = 30;
+
+    // Tetromino shapes
+    const SHAPES = {
+      I: [[1,1,1,1]],
+      O: [[1,1],[1,1]],
+      T: [[0,1,0],[1,1,1]],
+      S: [[0,1,1],[1,1,0]],
+      Z: [[1,1,0],[0,1,1]],
+      J: [[1,0,0],[1,1,1]],
+      L: [[0,0,1],[1,1,1]]
+    };
+
+    const COLORS = {
+      I: '#00f0f0',
+      O: '#f0f000',
+      T: '#a000f0',
+      S: '#00f000',
+      Z: '#f00000',
+      J: '#0000f0',
+      L: '#f0a000'
+    };
+
+    const TetrisGame = () => {
+      const [board, setBoard] = useState(() => Array(ROWS).fill().map(() => Array(COLS).fill(null)));
+      const [currentPiece, setCurrentPiece] = useState(null);
+      const [position, setPosition] = useState({ x: 0, y: 0 });
+      const [score, setScore] = useState(0);
+      const [level, setLevel] = useState(1);
+      const [lines, setLines] = useState(0);
+      const [gameOver, setGameOver] = useState(false);
+      const [isPaused, setIsPaused] = useState(false);
+      const [particles, setParticles] = useState([]);
+      
+      const gameLoopRef = useRef(null);
+      const dropSpeedRef = useRef(800);
+      const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
+      const lastMoveRef = useRef(0);
+
+      // Create new piece
+      const createPiece = useCallback(() => {
+        const shapes = Object.keys(SHAPES);
+        const randomShape = shapes[Math.floor(Math.random() * shapes.length)];
+        return {
+          shape: SHAPES[randomShape],
+          type: randomShape
+        };
+      }, []);
+
+      // Rotate piece
+      const rotatePiece = useCallback((piece) => {
+        const rotated = piece.shape[0].map((_, i) =>
+          piece.shape.map(row => row[i]).reverse()
+        );
+        return { ...piece, shape: rotated };
+      }, []);
+
+      // Check collision
+      const checkCollision = useCallback((piece, pos, boardState = board) => {
+        for (let y = 0; y < piece.shape.length; y++) {
+          for (let x = 0; x < piece.shape[y].length; x++) {
+            if (piece.shape[y][x]) {
+              const newY = pos.y + y;
+              const newX = pos.x + x;
+              
+              if (newX < 0 || newX >= COLS || newY >= ROWS) return true;
+              if (newY >= 0 && boardState[newY][newX]) return true;
+            }
+          }
+        }
+        return false;
+      }, [board]);
+
+      // Merge piece to board
+      const mergePiece = useCallback(() => {
+        const newBoard = board.map(row => [...row]);
+        
+        for (let y = 0; y < currentPiece.shape.length; y++) {
+          for (let x = 0; x < currentPiece.shape[y].length; x++) {
+            if (currentPiece.shape[y][x]) {
+              const boardY = position.y + y;
+              const boardX = position.x + x;
+              if (boardY >= 0) {
+                newBoard[boardY][boardX] = currentPiece.type;
+              }
+            }
+          }
+        }
+        
+        return newBoard;
+      }, [board, currentPiece, position]);
+
+      // Clear lines
+      const clearLines = useCallback((boardState) => {
+        const newParticles = [];
+        let linesCleared = 0;
+        const newBoard = boardState.filter((row, rowIndex) => {
+          const isFull = row.every(cell => cell !== null);
+          if (isFull) {
+            linesCleared++;
+            // Create particles for cleared line
+            for (let x = 0; x < COLS; x++) {
+              newParticles.push({
+                x: x * BLOCK_SIZE + BLOCK_SIZE / 2,
+                y: rowIndex * BLOCK_SIZE + BLOCK_SIZE / 2,
+                color: COLORS[row[x]],
+                vx: (Math.random() - 0.5) * 8,
+                vy: (Math.random() - 0.5) * 8 - 2,
+                life: 1
+              });
+            }
+          }
+          return !isFull;
+        });
+        
+        if (linesCleared > 0) {
+          setParticles(prev => [...prev, ...newParticles]);
+          const emptyRows = Array(linesCleared).fill().map(() => Array(COLS).fill(null));
+          return { board: [...emptyRows, ...newBoard], linesCleared };
+        }
+        
+        return { board: boardState, linesCleared: 0 };
+      }, []);
+
+      // Move piece down
+      const moveDown = useCallback((fast = false) => {
+        if (!currentPiece || gameOver || isPaused) return false;
+        
+        const newPos = { ...position, y: position.y + 1 };
+        
+        if (checkCollision(currentPiece, newPos)) {
+          const merged = mergePiece();
+          const { board: clearedBoard, linesCleared } = clearLines(merged);
+          
+          setBoard(clearedBoard);
+          setLines(prev => prev + linesCleared);
+          
+          if (linesCleared > 0) {
+            const points = [40, 100, 300, 1200][linesCleared - 1] * level;
+            setScore(prev => prev + points);
+          }
+          
+          const newPiece = createPiece();
+          const startPos = { x: Math.floor(COLS / 2) - 1, y: 0 };
+          
+          if (checkCollision(newPiece, startPos, clearedBoard)) {
+            setGameOver(true);
+            return false;
+          }
+          
+          setCurrentPiece(newPiece);
+          setPosition(startPos);
+          return false;
+        } else {
+          setPosition(newPos);
+          if (fast) setScore(prev => prev + 1);
+          return true;
+        }
+      }, [currentPiece, position, gameOver, isPaused, checkCollision, mergePiece, clearLines, createPiece, level]);
+
+      // Move left/right
+      const moveHorizontal = useCallback((direction) => {
+        if (!currentPiece || gameOver || isPaused) return;
+        
+        const newPos = { ...position, x: position.x + direction };
+        if (!checkCollision(currentPiece, newPos)) {
+          setPosition(newPos);
+        }
+      }, [currentPiece, position, gameOver, isPaused, checkCollision]);
+
+      // Rotate
+      const rotate = useCallback(() => {
+        if (!currentPiece || gameOver || isPaused) return;
+        
+        const rotated = rotatePiece(currentPiece);
+        if (!checkCollision(rotated, position)) {
+          setCurrentPiece(rotated);
+        }
+      }, [currentPiece, position, gameOver, isPaused, rotatePiece, checkCollision]);
+
+      // Hard drop
+      const hardDrop = useCallback(() => {
+        if (!currentPiece || gameOver || isPaused) return;
+        
+        let dropDistance = 0;
+        while (moveDown(true)) {
+          dropDistance++;
+        }
+      }, [currentPiece, gameOver, isPaused, moveDown]);
+
+      // Touch handlers
+      const handleTouchStart = (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        touchStartRef.current = {
+          x: touch.clientX,
+          y: touch.clientY,
+          time: Date.now()
+        };
+      };
+
+      const handleTouchMove = (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const deltaY = touch.clientY - touchStartRef.current.y;
+        const deltaX = touch.clientX - touchStartRef.current.x;
+        const now = Date.now();
+        
+        // Drag down to speed up
+        if (deltaY > 20 && now - lastMoveRef.current > 50) {
+          moveDown(true);
+          lastMoveRef.current = now;
+        }
+        
+        // Swipe left/right to move
+        if (Math.abs(deltaX) > 30 && now - lastMoveRef.current > 100) {
+          if (deltaX > 0) moveHorizontal(1);
+          else moveHorizontal(-1);
+          touchStartRef.current.x = touch.clientX;
+          lastMoveRef.current = now;
+        }
+      };
+
+      const handleTouchEnd = (e) => {
+        e.preventDefault();
+        const touch = e.changedTouches[0];
+        const deltaY = touch.clientY - touchStartRef.current.y;
+        const deltaX = touch.clientX - touchStartRef.current.x;
+        const timeDelta = Date.now() - touchStartRef.current.time;
+        
+        // Tap to rotate (short touch with minimal movement)
+        if (timeDelta < 200 && Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10) {
+          rotate();
+        }
+      };
+
+      // Initialize game
+      useEffect(() => {
+        const piece = createPiece();
+        setCurrentPiece(piece);
+        setPosition({ x: Math.floor(COLS / 2) - 1, y: 0 });
+      }, [createPiece]);
+
+      // Game loop
+      useEffect(() => {
+        if (gameOver || isPaused || !currentPiece) return;
+        
+        dropSpeedRef.current = Math.max(100, 800 - (level - 1) * 50);
+        
+        gameLoopRef.current = setInterval(() => {
+          moveDown();
+        }, dropSpeedRef.current);
+        
+        return () => clearInterval(gameLoopRef.current);
+      }, [moveDown, gameOver, isPaused, currentPiece, level]);
+
+      // Update level
+      useEffect(() => {
+        setLevel(Math.floor(lines / 10) + 1);
+      }, [lines]);
+
+      // Particle animation
+      useEffect(() => {
+        if (particles.length === 0) return;
+        
+        const interval = setInterval(() => {
+          setParticles(prev => prev
+            .map(p => ({
+              ...p,
+              x: p.x + p.vx,
+              y: p.y + p.vy,
+              vy: p.vy + 0.5,
+              life: p.life - 0.02
+            }))
+            .filter(p => p.life > 0)
+          );
+        }, 16);
+        
+        return () => clearInterval(interval);
+      }, [particles.length]);
+
+      // Restart game
+      const restart = () => {
+        setBoard(Array(ROWS).fill().map(() => Array(COLS).fill(null)));
+        setScore(0);
+        setLevel(1);
+        setLines(0);
+        setGameOver(false);
+        setParticles([]);
+        const piece = createPiece();
+        setCurrentPiece(piece);
+        setPosition({ x: Math.floor(COLS / 2) - 1, y: 0 });
+      };
+
+      // Render board
+      const renderBoard = () => {
+        const displayBoard = board.map(row => [...row]);
+        
+        // Add current piece to display
+        if (currentPiece) {
+          for (let y = 0; y < currentPiece.shape.length; y++) {
+            for (let x = 0; x < currentPiece.shape[y].length; x++) {
+              if (currentPiece.shape[y][x]) {
+                const boardY = position.y + y;
+                const boardX = position.x + x;
+                if (boardY >= 0 && boardY < ROWS && boardX >= 0 && boardX < COLS) {
+                  displayBoard[boardY][boardX] = currentPiece.type;
+                }
+              }
+            }
+          }
+        }
+        
+        return displayBoard;
+      };
+
+      const displayBoard = renderBoard();
+
+      return (
+        <div style={{
+          width: '100vw',
+          height: '100vh',
+          backgroundColor: '#0a0e27',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: '"Outfit", -apple-system, sans-serif',
+          color: '#fff',
+          overflow: 'hidden',
+          position: 'relative',
+          touchAction: 'none',
+          userSelect: 'none'
+        }}>
+          {/* Background gradient */}
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'radial-gradient(circle at 30% 20%, rgba(0, 240, 240, 0.1) 0%, transparent 50%), radial-gradient(circle at 70% 80%, rgba(240, 100, 80, 0.1) 0%, transparent 50%)',
+            pointerEvents: 'none'
+          }} />
+          
+          {/* Score panel */}
+          <div style={{
+            position: 'absolute',
+            top: '20px',
+            left: '20px',
+            right: '20px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            zIndex: 10
+          }}>
+            <div style={{
+              background: 'rgba(255, 255, 255, 0.05)',
+              backdropFilter: 'blur(10px)',
+              padding: '12px 20px',
+              borderRadius: '12px',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+            }}>
+              <div style={{ fontSize: '12px', opacity: 0.6, marginBottom: '4px' }}>SCORE</div>
+              <div style={{ fontSize: '24px', fontWeight: '700', color: '#00f0f0' }}>{score}</div>
+            </div>
+            
+            <div style={{
+              background: 'rgba(255, 255, 255, 0.05)',
+              backdropFilter: 'blur(10px)',
+              padding: '12px 20px',
+              borderRadius: '12px',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontSize: '12px', opacity: 0.6, marginBottom: '4px' }}>LEVEL</div>
+              <div style={{ fontSize: '24px', fontWeight: '700', color: '#f06450' }}>{level}</div>
+            </div>
+            
+            <div style={{
+              background: 'rgba(255, 255, 255, 0.05)',
+              backdropFilter: 'blur(10px)',
+              padding: '12px 20px',
+              borderRadius: '12px',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+            }}>
+              <div style={{ fontSize: '12px', opacity: 0.6, marginBottom: '4px' }}>LINES</div>
+              <div style={{ fontSize: '24px', fontWeight: '700' }}>{lines}</div>
+            </div>
+          </div>
+
+          {/* Game board */}
+          <div
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            style={{
+              position: 'relative',
+              display: 'grid',
+              gridTemplateColumns: `repeat(${COLS}, ${BLOCK_SIZE}px)`,
+              gridTemplateRows: `repeat(${ROWS}, ${BLOCK_SIZE}px)`,
+              gap: '1px',
+              background: 'rgba(0, 0, 0, 0.3)',
+              padding: '2px',
+              borderRadius: '8px',
+              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05)',
+              marginTop: '20px'
+            }}
+          >
+            {displayBoard.map((row, y) =>
+              row.map((cell, x) => (
+                <div
+                  key={`${y}-${x}`}
+                  style={{
+                    width: `${BLOCK_SIZE}px`,
+                    height: `${BLOCK_SIZE}px`,
+                    backgroundColor: cell ? COLORS[cell] : 'rgba(255, 255, 255, 0.02)',
+                    borderRadius: '3px',
+                    transition: 'all 0.1s ease',
+                    boxShadow: cell ? `0 2px 8px ${COLORS[cell]}40, inset 0 0 0 1px rgba(255, 255, 255, 0.2)` : 'none',
+                    position: 'relative',
+                    overflow: 'hidden'
+                  }}
+                >
+                  {cell && (
+                    <div style={{
+                      position: 'absolute',
+                      inset: '4px',
+                      background: `linear-gradient(135deg, rgba(255,255,255,0.3) 0%, transparent 100%)`,
+                      borderRadius: '2px',
+                      pointerEvents: 'none'
+                    }} />
+                  )}
+                </div>
+              ))
+            )}
+            
+            {/* Particles */}
+            {particles.map((p, i) => (
+              <div
+                key={i}
+                style={{
+                  position: 'absolute',
+                  left: `${p.x}px`,
+                  top: `${p.y}px`,
+                  width: '6px',
+                  height: '6px',
+                  backgroundColor: p.color,
+                  borderRadius: '50%',
+                  opacity: p.life,
+                  boxShadow: `0 0 10px ${p.color}`,
+                  pointerEvents: 'none'
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Controls hint */}
+          <div style={{
+            position: 'absolute',
+            bottom: '20px',
+            left: '20px',
+            right: '20px',
+            textAlign: 'center',
+            fontSize: '12px',
+            opacity: 0.5,
+            lineHeight: '1.6'
+          }}>
+            Tap to rotate • Drag down to drop faster • Swipe left/right to move
+          </div>
+
+          {/* Game Over overlay */}
+          {gameOver && (
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(10, 14, 39, 0.95)',
+              backdropFilter: 'blur(10px)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 100,
+              animation: 'fadeIn 0.3s ease'
+            }}>
+              <div style={{
+                fontSize: '48px',
+                fontWeight: '700',
+                marginBottom: '20px',
+                background: 'linear-gradient(135deg, #00f0f0, #f06450)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                backgroundClip: 'text'
+              }}>
+                GAME OVER
+              </div>
+              
+              <div style={{
+                fontSize: '18px',
+                marginBottom: '10px',
+                opacity: 0.8
+              }}>
+                Final Score: {score}
+              </div>
+              
+              <div style={{
+                fontSize: '14px',
+                marginBottom: '40px',
+                opacity: 0.6
+              }}>
+                Lines: {lines} • Level: {level}
+              </div>
+              
+              <button
+                onClick={restart}
+                style={{
+                  padding: '16px 40px',
+                  fontSize: '18px',
+                  fontWeight: '600',
+                  background: 'linear-gradient(135deg, #00f0f0, #00c0c0)',
+                  border: 'none',
+                  borderRadius: '12px',
+                  color: '#0a0e27',
+                  cursor: 'pointer',
+                  boxShadow: '0 10px 30px rgba(0, 240, 240, 0.3)',
+                  transition: 'all 0.2s ease',
+                  fontFamily: 'inherit'
+                }}
+                onTouchStart={(e) => {
+                  e.currentTarget.style.transform = 'scale(0.95)';
+                }}
+                onTouchEnd={(e) => {
+                  e.currentTarget.style.transform = 'scale(1)';
+                }}
+              >
+                PLAY AGAIN
+              </button>
+            </div>
+          )}
+
+          {/* Pause button */}
+          {!gameOver && (
+            <button
+              onClick={() => setIsPaused(!isPaused)}
+              style={{
+                position: 'absolute',
+                top: '120px',
+                right: '20px',
+                width: '50px',
+                height: '50px',
+                borderRadius: '50%',
+                background: 'rgba(255, 255, 255, 0.05)',
+                backdropFilter: 'blur(10px)',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                color: '#fff',
+                fontSize: '20px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 10
+              }}
+            >
+              {isPaused ? '▶' : '⏸'}
+            </button>
+          )}
+
+          {isPaused && !gameOver && (
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(10, 14, 39, 0.8)',
+              backdropFilter: 'blur(5px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '36px',
+              fontWeight: '700',
+              zIndex: 50
+            }}>
+              PAUSED
+            </div>
+          )}
+
+          <style>{`
+            @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap');
+            
+            @keyframes fadeIn {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+            
+            * {
+              -webkit-tap-highlight-color: transparent;
+            }
+          `}</style>
+        </div>
+      );
+    };
+
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<TetrisGame />);
   </script>
