@@ -44,6 +44,7 @@
     const TetrisGame = () => {
       const [board, setBoard] = useState(() => Array(ROWS).fill().map(() => Array(COLS).fill(null)));
       const [currentPiece, setCurrentPiece] = useState(null);
+      const [nextPiece, setNextPiece] = useState(null);
       const [position, setPosition] = useState({ x: 0, y: 0 });
       const [score, setScore] = useState(0);
       const [level, setLevel] = useState(1);
@@ -56,6 +57,7 @@
       const dropSpeedRef = useRef(800);
       const touchStartRef = useRef({ x: 0, y: 0, time: 0 });
       const lastMoveRef = useRef(0);
+      const lastHorizontalMoveRef = useRef(0);
 
       // Create new piece
       const createPiece = useCallback(() => {
@@ -160,15 +162,16 @@
             setScore(prev => prev + points);
           }
           
-          const newPiece = createPiece();
+          // Use next piece and generate a new next piece
           const startPos = { x: Math.floor(COLS / 2) - 1, y: 0 };
           
-          if (checkCollision(newPiece, startPos, clearedBoard)) {
+          if (checkCollision(nextPiece, startPos, clearedBoard)) {
             setGameOver(true);
             return false;
           }
           
-          setCurrentPiece(newPiece);
+          setCurrentPiece(nextPiece);
+          setNextPiece(createPiece());
           setPosition(startPos);
           return false;
         } else {
@@ -176,7 +179,7 @@
           if (fast) setScore(prev => prev + 1);
           return true;
         }
-      }, [currentPiece, position, gameOver, isPaused, checkCollision, mergePiece, clearLines, createPiece, level]);
+      }, [currentPiece, nextPiece, position, gameOver, isPaused, checkCollision, mergePiece, clearLines, createPiece, level]);
 
       // Move left/right
       const moveHorizontal = useCallback((direction) => {
@@ -188,14 +191,30 @@
         }
       }, [currentPiece, position, gameOver, isPaused, checkCollision]);
 
-      // Rotate
+      // Rotate with wall kicks
       const rotate = useCallback(() => {
         if (!currentPiece || gameOver || isPaused) return;
         
         const rotated = rotatePiece(currentPiece);
+        
+        // Try rotating at current position first
         if (!checkCollision(rotated, position)) {
           setCurrentPiece(rotated);
+          return;
         }
+        
+        // Wall kick: try shifting left or right
+        const kickOffsets = [0, -1, 1, -2, 2];
+        for (let offset of kickOffsets) {
+          const kickPos = { x: position.x + offset, y: position.y };
+          if (!checkCollision(rotated, kickPos)) {
+            setCurrentPiece(rotated);
+            setPosition(kickPos);
+            return;
+          }
+        }
+        
+        // If no wall kick works, rotation fails (don't rotate)
       }, [currentPiece, position, gameOver, isPaused, rotatePiece, checkCollision]);
 
       // Hard drop
@@ -241,17 +260,17 @@
           setScore(prev => prev + points);
         }
         
-        // Spawn new piece
-        const newPiece = createPiece();
+        // Use next piece and generate a new next piece
         const startPos = { x: Math.floor(COLS / 2) - 1, y: 0 };
         
-        if (checkCollision(newPiece, startPos, clearedBoard)) {
+        if (checkCollision(nextPiece, startPos, clearedBoard)) {
           setGameOver(true);
         } else {
-          setCurrentPiece(newPiece);
+          setCurrentPiece(nextPiece);
+          setNextPiece(createPiece());
           setPosition(startPos);
         }
-      }, [currentPiece, position, board, gameOver, isPaused, checkCollision, clearLines, createPiece, level]);
+      }, [currentPiece, nextPiece, position, board, gameOver, isPaused, checkCollision, clearLines, createPiece, level]);
 
       // Calculate ghost position
       const getGhostPosition = useCallback(() => {
@@ -273,6 +292,7 @@
           y: touch.clientY,
           time: Date.now()
         };
+        lastHorizontalMoveRef.current = 0;
       };
 
       const handleTouchMove = (e) => {
@@ -288,11 +308,14 @@
           lastMoveRef.current = now;
         }
         
-        // More responsive horizontal movement - reduced threshold from 30 to 15
-        if (Math.abs(deltaX) > 15 && now - lastMoveRef.current > 80) {
-          if (deltaX > 0) moveHorizontal(1);
-          else moveHorizontal(-1);
-          touchStartRef.current.x = touch.clientX;
+        // Much more fluid horizontal movement - continuous tracking
+        const cellWidth = BLOCK_SIZE + 1; // Account for gap
+        const horizontalCells = Math.floor(Math.abs(deltaX) / cellWidth);
+        
+        if (horizontalCells > lastHorizontalMoveRef.current && now - lastMoveRef.current > 50) {
+          const direction = deltaX > 0 ? 1 : -1;
+          moveHorizontal(direction);
+          lastHorizontalMoveRef.current = horizontalCells;
           lastMoveRef.current = now;
         }
       };
@@ -312,12 +335,16 @@
         else if (timeDelta < 200 && Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10) {
           rotate();
         }
+        
+        lastHorizontalMoveRef.current = 0;
       };
 
       // Initialize game
       useEffect(() => {
         const piece = createPiece();
+        const next = createPiece();
         setCurrentPiece(piece);
+        setNextPiece(next);
         setPosition({ x: Math.floor(COLS / 2) - 1, y: 0 });
       }, [createPiece]);
 
@@ -368,7 +395,9 @@
         setGameOver(false);
         setParticles([]);
         const piece = createPiece();
+        const next = createPiece();
         setCurrentPiece(piece);
+        setNextPiece(next);
         setPosition({ x: Math.floor(COLS / 2) - 1, y: 0 });
       };
 
@@ -447,7 +476,9 @@
             right: '20px',
             display: 'flex',
             justifyContent: 'space-between',
-            zIndex: 10
+            zIndex: 10,
+            flexWrap: 'wrap',
+            gap: '10px'
           }}>
             <div style={{
               background: 'rgba(255, 255, 255, 0.05)',
@@ -482,6 +513,40 @@
               <div style={{ fontSize: '12px', opacity: 0.6, marginBottom: '4px' }}>LINES</div>
               <div style={{ fontSize: '24px', fontWeight: '700' }}>{lines}</div>
             </div>
+            
+            {/* Next piece preview */}
+            {nextPiece && (
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.05)',
+                backdropFilter: 'blur(10px)',
+                padding: '12px 16px',
+                borderRadius: '12px',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+              }}>
+                <div style={{ fontSize: '12px', opacity: 0.6, marginBottom: '8px', textAlign: 'center' }}>NEXT</div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(4, 20px)`,
+                  gridTemplateRows: `repeat(${nextPiece.shape.length}, 20px)`,
+                  gap: '2px',
+                }}>
+                  {nextPiece.shape.map((row, y) =>
+                    row.map((cell, x) => (
+                      <div
+                        key={`next-${y}-${x}`}
+                        style={{
+                          width: '20px',
+                          height: '20px',
+                          backgroundColor: cell ? COLORS[nextPiece.type] : 'transparent',
+                          borderRadius: '2px',
+                          boxShadow: cell ? `0 2px 6px ${COLORS[nextPiece.type]}40` : 'none',
+                        }}
+                      />
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Game board */}
